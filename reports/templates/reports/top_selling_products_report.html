@@ -1,0 +1,24 @@
+{% extends "reports/report_base.html" %}
+
+{% block content %}
+    <table>
+        <thead>
+            <tr>
+                <th>ID Producto</th>
+                <th>Nombre Producto</th>
+                <th>Cantidad Vendida</th>
+                <th>Ingresos Generados</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for product in report_data %}
+            <tr>
+                <td>{{ product.producto__id }}</td>
+                <td>{{product.producto__nombre}}</td>
+                <td>{{product.cantidad_vendida}}</td>
+                <td>{{product.ingresos_generados}}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

@@ -1,4 +1,4 @@
-# tu_proyecto/urls.py
+# tu_proyecto/urls.py (o erp/urls.py según tu estructura)
 
 from django.contrib import admin
 from django.urls import path, include, re_path
@@ -26,14 +26,13 @@ from apps.suscripciones.views import SuscripcionViewSet
 from apps.productos.views import ProductoViewSet
 from apps.movimientos.views import MovimientoViewSet
 
-
 # --- Inicializar el ÚNICO router ---
 router = DefaultRouter()
 
 # --- Registrar TODOS tus ViewSets aquí ---
 router.register(r'permissions', PermissionViewSet, basename='permission')
 router.register(r'roles', RoleViewSet, basename='role')
-router.register(r'users', UserViewSet, basename='user') # <-- Registrado en el router principal
+router.register(r'users', UserViewSet, basename='user')
 router.register(r'sucursales', SucursalViewSet, basename='sucursal')
 router.register(r'almacenes', AlmacenViewSet, basename='almacen')
 router.register(r'categorias', CategoriaViewSet, basename='categoria')
@@ -45,7 +44,6 @@ router.register(r'proveedores', ProveedorViewSet, basename='proveedor')
 router.register(r'suscripciones', SuscripcionViewSet, basename='suscripcion')
 router.register(r'productos', ProductoViewSet, basename='producto')
 router.register(r'movimientos', MovimientoViewSet, basename='movimiento')
-
 
 schema_view = get_schema_view(
     openapi.Info(
@@ -60,17 +58,21 @@ schema_view = get_schema_view(
     permission_classes=(permissions.AllowAny,),
 )
 
-
 urlpatterns = [
     path('admin/', admin.site.urls),
 
     # --- Incluir TODAS las URLs generadas por el router bajo el prefijo 'api/' ---
-    path('api/', include(router.urls)), # Maneja todas las rutas de tus ViewSets (incluyendo /api/users/)
+    path('api/', include(router.urls)),  # Maneja todas las rutas de tus ViewSets (incluyendo /api/users/)
 
     # --- Las URLs de 'apps.usuarios' que son manuales (login, registro, perfil) ---
-    path('api/usuarios/', include('apps.usuarios.urls')), # <-- Esta sigue incluyendo las rutas manuales de la app usuarios.
+    path('api/usuarios/', include('apps.usuarios.urls')),
+    # <-- Esta sigue incluyendo las rutas manuales de la app usuarios.
 
     path('api/dashboard/', include('apps.dashboard.urls')),
+
+    # --- ¡AÑADE ESTA LÍNEA PARA INCLUIR LAS URLS DE REPORTES! ---
+    path('api/reports/', include('reports.urls')),
+    # Asumiendo que 'reports' está directamente bajo la carpeta del proyecto.
 
     re_path(r'^swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     re_path(r'^swagger/$', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),

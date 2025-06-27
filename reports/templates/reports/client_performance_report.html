@@ -1,0 +1,26 @@
+{% extends "reports/report_base.html" %}
+
+{% block content %}
+    <table>
+        <thead>
+            <tr>
+                <th>ID Cliente</th>
+                <th>Nombre Cliente</th>
+                <th>Email Cliente</th>
+                <th>Monto Total Comprado</th>
+                <th>Número Ventas</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for client in report_data %}
+            <tr>
+                <td>{{ client.id }}</td>
+                <td>{{ client.nombre_cliente }}</td>
+                <td>{{ client.email_cliente }}</td>
+                <td>{{ client.monto_total_comprado }}</td>
+                <td>{{ client.numero_ventas_realizadas }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

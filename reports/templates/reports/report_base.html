@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Reporte - {{ title }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; text-align: center; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .footer { margin-top: 30px; text-align: center; font-size: 0.8em; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <p><strong>Fecha de Generación:</strong> {{ generated_date }}</p>
+    <p><strong>Empresa:</strong> {{ company_name }}</p>
+    {% block content %}{% endblock %}
+    <div class="footer">
+        Generado por tu sistema de gestión.
+    </div>
+</body>
+</html>

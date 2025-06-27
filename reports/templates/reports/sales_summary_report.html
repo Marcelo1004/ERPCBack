@@ -1,0 +1,20 @@
+{% extends "reports/report_base.html" %}
+
+{% block content %}
+    <table>
+        <thead>
+            <tr>
+                <th>Total Ventas</th>
+                <th>Monto Total Ventas</th>
+                <th>Promedio por Venta</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>{{ report_data.total_ventas_cantidad }}</td>
+                <td>{{ report_data.monto_total_ventas }}</td>
+                <td>{{ report_data.promedio_por_venta }}</td>
+            </tr>
+        </tbody>
+    </table>
+{% endblock %}
