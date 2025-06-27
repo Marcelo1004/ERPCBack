@@ -29,4 +29,3 @@ class Proveedor(models.Model):
     def __str__(self):
         return f"{self.nombre} ({self.empresa.nombre})"
 
-# No añadimos los modelos de Compra/DetalleCompra aún, nos centraremos solo en Proveedor por ahora.

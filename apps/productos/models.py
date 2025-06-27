@@ -9,6 +9,12 @@ class Producto(models.Model):
     precio = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio Unitario")
     stock = models.PositiveIntegerField(default=0, verbose_name="Stock Disponible")
     imagen = models.ImageField(upload_to='productos/', blank=True, null=True, verbose_name="Imagen del Producto")
+    descuento = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.00,
+        help_text="Porcentaje de descuento (ej. 0.10 para 10%). Máximo 1.00 (100%)."
+    )
 
     categoria = models.ForeignKey(
         Categoria,
@@ -43,4 +49,12 @@ class Producto(models.Model):
 
     def __str__(self):
         return f"{self.nombre} ({self.empresa.nombre})"
+
+    def save(self, *args, **kwargs):
+        # Asegurarse de que el descuento no exceda 1.00 (100%)
+        if self.descuento > 1.00:
+            self.descuento = 1.00
+        elif self.descuento < 0.00:
+            self.descuento = 0.00
+        super().save(*args, **kwargs)
 

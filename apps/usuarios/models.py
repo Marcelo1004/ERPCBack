@@ -1,81 +1,96 @@
 # apps/usuarios/models.py
-from django.contrib.auth.models import AbstractUser,BaseUserManager
+
+from apps.rbac.models import Role  # Importa el modelo Role
+from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.core.exceptions import ValidationError
-from apps.empresas.models import Empresa # Importa el modelo Empresa
+from apps.empresas.models import Empresa  # Importa el modelo Empresa
 
 
 class CustomUserManager(BaseUserManager):
-    def create_user(self, email, username, password=None, **extra_fields):
+    """
+    Manager de modelo de usuario personalizado donde el username es el identificador principal
+    y el email es un campo requerido.
+    """
+
+    def create_user(self, username, email, password=None,
+                    **extra_fields):  # El orden de los argumentos coincide con REQUIRED_FIELDS
         if not email:
             raise ValueError('El campo Email debe ser establecido')
         if not username:
             raise ValueError('El campo Username debe ser establecido')
 
         email = self.normalize_email(email)
-        user = self.model(email=email, username=username, **extra_fields)
+        user = self.model(username=username, email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, username, password=None, **extra_fields):
+    def create_superuser(self, username, email, password=None,
+                         **extra_fields):  # El orden de los argumentos coincide con REQUIRED_FIELDS
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
-        extra_fields.setdefault('role', 'SUPERUSER') # Asegura que el rol sea SUPERUSER
 
         if extra_fields.get('is_staff') is not True:
-            raise ValueError('Superuser debe tener is_staff=True.')
+            raise ValueError('Superusuario debe tener is_staff=True.')
         if extra_fields.get('is_superuser') is not True:
-            raise ValueError('Superuser debe tener is_superuser=True.')
-        return self.create_user(email, username, password, **extra_fields)
+            raise ValueError('Superusuario debe tener is_superuser=True.')
 
-class User(AbstractUser):
-    ROLE_CHOICES = [
-        ('CLIENTE', 'Cliente'),
-        ('SUPERUSER', 'Super_Usuario'),
-        ('ADMINISTRATIVO', 'Administrativo'),
-        ('EMPLEADO', 'Empleado'),
-    ]
-    email = models.EmailField(unique=True)
+        # Intentar obtener el rol 'Super Usuario'
+        try:
+            superuser_role_obj = Role.objects.get(name='Super Usuario')
+        except Role.DoesNotExist:
+            raise ValueError(
+                "El rol 'Super Usuario' no existe. Asegúrate de que este rol se haya creado en tu seeder (apps/rbac/signals.py) antes de intentar crear un superusuario."
+            )
 
-    role = models.CharField(
-        max_length=20,
-        choices=ROLE_CHOICES,
-        default='CLIENTE'
-    )
+        # Asigna la instancia del rol al campo 'role'
+        extra_fields['role'] = superuser_role_obj
+
+        # Crea el superusuario usando create_user
+        return self.create_user(username, email, password, **extra_fields)
+
+
+# Renombra la clase a CustomUser para consistencia con AUTH_USER_MODEL en settings.py y otros archivos
+class CustomUser(AbstractUser):
+
+    email = models.EmailField(unique=True, blank=False, null=False)  # Hacerlo unique y no nulo
+
+    role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='users',
+                             verbose_name="Rol del Usuario")
 
     telefono = models.CharField(max_length=15, blank=True, null=True)
-    ci = models.CharField(max_length=20, unique=True, blank=True, null=True)
+    ci = models.CharField(max_length=20, unique=True, blank=True,
+                          null=True)  # unique=True si es realmente único a nivel global
     direccion = models.CharField(max_length=255, blank=True, null=True)
 
-    empresa = models.ForeignKey('empresas.Empresa', on_delete=models.SET_NULL, null=True, blank=True,
+    # Asumiendo que 'empresas.Empresa' es la forma correcta de referenciar la FK
+    empresa = models.ForeignKey(Empresa, on_delete=models.SET_NULL, null=True, blank=True,
                                 related_name='usuarios')
 
-    objects = CustomUserManager()
+    objects = CustomUserManager()  # Asigna tu manager personalizado
 
-    # ¡¡¡CAMBIADO AQUÍ!!! Ahora usa 'username' como campo de login
-    USERNAME_FIELD = 'username'
-    # 'email' ahora es un campo requerido al crear un superusuario, pero no es el campo de login principal
-    REQUIRED_FIELDS = ['email', 'first_name', 'last_name', 'ci']
+    # Define el campo a usar como identificador de inicio de sesión
+    USERNAME_FIELD = 'username'  # AbstractUser usa 'username' por defecto. Si quieres usar email, cámbialo a 'email'.
+    REQUIRED_FIELDS = ['email', 'first_name', 'last_name',
+                       'ci']  # Campos que se piden al crear un superusuario (además de USERNAME_FIELD y password)
+
+    class Meta:
+        verbose_name = 'Usuario'
+        verbose_name_plural = 'Usuarios'
 
     def __str__(self):
-        return self.username
+        return self.username if self.username else self.email
 
-    def clean(self):
-        super().clean()
-        # Este bloque debe seguir COMENTADO o ELIMINADO si ya no se requiere esta validación estricta
-        # if not self.is_superuser and not self.empresa:
-        #     raise ValidationError("Un usuario que no es Super_Usuario debe estar asignado a una empresa.")
+    # Método para verificar permisos basados en el code_name del permiso
+    def has_permission_code(self, permission_code):
+        if self.is_superuser:  # Superusuario siempre tiene todos los permisos
+            return True
 
-    def save(self, *args, **kwargs):
-        # self.clean() # Mantener si tienes otras validaciones en clean()
-        super().save(*args, **kwargs)
+        # Si el usuario tiene un rol asignado y el rol está activo
+        if self.role and self.role.is_active:
 
-    @property
-    def is_client(self):
-        return self.role == 'CLIENTE'
+            return self.role.permissions.filter(code_name=permission_code, is_active=True).exists()
+        return False
 
-    @property
-    def is_admin_or_employee(self):
-        return self.role in ['ADMINISTRATIVO', 'EMPLEADO']

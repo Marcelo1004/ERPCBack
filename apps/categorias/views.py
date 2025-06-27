@@ -1,10 +1,11 @@
-from rest_framework import generics, permissions
-from rest_framework.permissions import IsAuthenticated, AllowAny
+# apps/categorias/views.py
+
+from rest_framework import viewsets, permissions, status
 from rest_framework.exceptions import PermissionDenied
 
 from .models import Categoria
 from .serializers import CategoriaSerializer
-from apps.usuarios.views import IsAdminUserOrSuperUser, IsSuperUser
+# Asegúrate de que tu modelo de usuario tenga 'role' y 'empresa' correctamente configurados.
 
 
 class CategoriaPermission(permissions.BasePermission):
@@ -16,71 +17,87 @@ class CategoriaPermission(permissions.BasePermission):
     """
 
     def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
+        # 1. Verificar si el usuario está autenticado. Si no, denegar explícitamente.
+        if not request.user or request.user.is_anonymous: # Usamos is_anonymous para mayor claridad
             raise PermissionDenied("Debe estar autenticado para acceder a las categorías.")
 
+        # 2. Si es superusuario, siempre tiene permiso.
         if request.user.is_superuser:
             return True
 
-        if request.user.role == 'ADMINISTRATIVO' and request.user.empresa:
+        # 3. Verificar que el usuario autenticado tiene un rol válido y empresa asignada.
+        if not hasattr(request.user, 'role') or request.user.role is None or \
+           not hasattr(request.user, 'empresa') or request.user.empresa is None:
+            raise PermissionDenied("Su cuenta no tiene un rol o empresa válidos asignados.")
+
+        user_role_name = request.user.role.name
+
+        # 4. Lógica de permisos basada en el rol y empresa del usuario
+        # Administradores de Empresa: Acceso total a categorías de SU propia empresa.
+        if user_role_name == 'Administrador':
             return True
 
-        if request.user.role in ['CLIENTE', 'EMPLEADO'] and request.user.empresa and request.method == 'GET':
+        # Clientes o Empleados: Solo lectura de categorías de SU propia empresa.
+        if user_role_name in ['Cliente', 'Empleado'] and request.method in permissions.SAFE_METHODS:
             return True
 
+        # Denegar cualquier otro caso.
         return False
 
     def has_object_permission(self, request, view, obj):
+        # 1. Si es superusuario, siempre tiene permiso sobre el objeto.
         if request.user.is_superuser:
             return True
 
-        if request.user.is_authenticated and request.user.empresa == obj.empresa:
-            if request.method in permissions.SAFE_METHODS:  # GET
-                return True
-            if request.user.role == 'ADMINISTRATIVO':
+        # 2. Verificar que el usuario está autenticado y tiene una empresa asociada.
+        # Y que el objeto (categoría) pertenece a la misma empresa del usuario.
+        if request.user.is_authenticated and \
+           hasattr(request.user, 'empresa') and request.user.empresa is not None and \
+           request.user.empresa == obj.empresa: # Comparar la instancia de empresa
+
+            # 3. Lógica de permisos sobre el objeto basado en el rol
+            # Métodos seguros (GET): permitidos para Clientes, Empleados y Administradores de la misma empresa.
+            if request.method in permissions.SAFE_METHODS:
                 return True
 
+            # Otros métodos (PUT/PATCH/DELETE): permitidos solo para Administradores de la misma empresa.
+            if hasattr(request.user, 'role') and request.user.role is not None and request.user.role.name == 'Administrador':
+                return True
+
+        # Denegar cualquier otro caso.
         return False
 
 
-class CategoriaListView(generics.ListCreateAPIView):
+class CategoriaViewSet(viewsets.ModelViewSet):
     """
-    Vista para listar todas las categorias (GET) y crear una nueva categoria (POST),
-    filtradas por la empresa del usuario y ordenadas alfabéticamente por nombre.
+    ViewSet para la gestión de Categorias. Proporciona acciones de listado, creación,
+    recuperación, actualización y eliminación.
     """
     serializer_class = CategoriaSerializer
     permission_classes = [CategoriaPermission]
 
     def get_queryset(self):
+        # === INICIO DE LA CORRECCIÓN CRÍTICA PARA SWAGGER/AnonymousUser ===
+        if getattr(self, 'swagger_fake_view', False):
+            return Categoria.objects.none()
+        # === FIN DE LA CORRECCIÓN ===
+
+        user = self.request.user
         queryset = Categoria.objects.all()
-        if self.request.user.is_superuser:
-            return queryset.order_by('nombre') # ORDEN ALFABÉTICO
-        elif self.request.user.is_authenticated and self.request.user.empresa:
-            return queryset.filter(empresa=self.request.user.empresa).order_by('nombre') # ORDEN ALFABÉTICO
+
+        if user.is_superuser:
+            return queryset.order_by('nombre')
+        elif user.is_authenticated and hasattr(user, 'empresa') and user.empresa:
+            return queryset.filter(empresa=user.empresa).order_by('nombre')
+
         return Categoria.objects.none()
 
     def perform_create(self, serializer):
-        if not self.request.user.is_superuser:
-            if not self.request.user.empresa:
+        # Al crear una categoría, asigna automáticamente la empresa del usuario autenticado
+        user = self.request.user
+        if not user.is_superuser:
+            if not (hasattr(user, 'empresa') and user.empresa):
                 raise PermissionDenied("No estás asociado a ninguna empresa para crear categorías.")
-            serializer.save(empresa=self.request.user.empresa)
+            serializer.save(empresa=user.empresa)
         else:
             serializer.save()
-
-
-class CategoriaDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    Vista para obtener detalles (GET), actualizar (PUT/PATCH) y eliminar (DELETE) una categoria específica,
-    restringido a la empresa del usuario.
-    """
-    serializer_class = CategoriaSerializer
-    permission_classes = [CategoriaPermission]
-    lookup_field = 'pk'
-
-    def get_queryset(self):
-        queryset = Categoria.objects.all()
-        if self.request.user.is_superuser:
-            return queryset
-        elif self.request.user.is_authenticated and self.request.user.empresa:
-            return queryset.filter(empresa=self.request.user.empresa)
-        return Categoria.objects.none()

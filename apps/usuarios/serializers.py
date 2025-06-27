@@ -1,17 +1,25 @@
+# apps/users/serializers.py
+
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework import serializers
 from django.db import transaction
 
-# Asegúrate de que estos imports sean correctos para la ubicación de tus modelos
-from .models import User
+# === CAMBIO CLAVE AQUÍ: Importa la CLASE de tu modelo de usuario (ej. CustomUser) ===
+# Asumo que tu modelo de usuario se llama CustomUser. Si tiene otro nombre (ej. MyUser),
+# cámbialo a from .models import MyUser as User
+from .models import CustomUser as User  # <--- CORREGIDO: Importa el modelo, no el gestor
+# ====================================================================================
+
 from apps.empresas.models import Empresa
-from apps.empresas.serializers import \
-    EmpresaSerializer  # Asegúrate de que EmpresaSerializer esté definido y sea accesible
+from apps.empresas.serializers import EmpresaSerializer
 from apps.suscripciones.models import Suscripcion
 
+# === NUEVAS IMPORTACIONES PARA RBAC ===
+from apps.rbac.models import Role, Permission  # Importa los modelos Role y Permission
+from apps.rbac.serializers import RoleSerializer  # Importa RoleSerializer para anidar
 
-# from apps.suscripciones.serializers import SuscripcionSerializer # No se usa directamente aquí
 
+# =======================================
 
 # Serializer para el token JWT personalizado
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -25,30 +33,37 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 # Serializer para el perfil de usuario (lectura, uso en el login)
 class UserProfileSerializer(serializers.ModelSerializer):
-    # empresa_detail se usa para anidar los detalles de la empresa al leer
     empresa_detail = EmpresaSerializer(source='empresa', read_only=True)
 
+    # 'role' ahora es un serializador anidado para mostrar el objeto completo del rol (id, name, description, etc.)
+    role = RoleSerializer(read_only=True)
+
     class Meta:
-        model = User
+        model = User  # Esto ahora apuntará correctamente a la clase CustomUser
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 'role',
             'telefono', 'ci', 'direccion',
-            'empresa',  # ID de la FK, puede ser leído y escrito para asignar una empresa existente
-            'empresa_detail',  # Detalles de la empresa (solo lectura, anidado)
+            'empresa',
+            'empresa_detail',
             'is_active', 'is_staff', 'is_superuser',
-            'date_joined',  # Campo generado por Django, solo lectura
-            'last_login'  # Campo generado por Django, solo lectura
+            'date_joined',
+            'last_login'
         ]
         read_only_fields = [
             'id', 'username', 'email', 'date_joined', 'last_login',
-            'is_active', 'is_staff', 'is_superuser'
-        ]  # Se eliminó 'empresa' de read_only_fields para permitir su actualización
+            'is_active', 'is_staff', 'is_superuser', 'role'
+        ]
 
 
 # Serializer para el registro de usuarios (creación)
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
     password2 = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
+
+    # 'role' acepta un ID de Role para escritura. El queryset asegura que solo se puedan asignar roles existentes.
+    role = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(), required=False, allow_null=True
+    )
 
     # Campos write_only para la creación de una NUEVA empresa por SuperUsuarios
     empresa_nombre = serializers.CharField(
@@ -65,38 +80,28 @@ class UserRegisterSerializer(serializers.ModelSerializer):
     )
 
     class Meta:
-        model = User
-        # Estos son los campos que se ESPERA recibir del frontend para el REGISTRO
+        model = User  # Esto ahora apuntará correctamente a la clase CustomUser
         fields = [
             'username', 'email', 'first_name', 'last_name', 'role',
             'telefono', 'ci', 'direccion',
             'password', 'password2',
-            'empresa',  # Para asignar un usuario a una empresa EXISTENTE
-            'empresa_nombre',  # Para SuperUsuario que crea una nueva empresa
-            'empresa_nit',  # Para SuperUsuario que crea una nueva empresa
-            'suscripcion_id'  # Para SuperUsuario que crea una nueva empresa
+            'empresa',
+            'empresa_nombre',
+            'empresa_nit',
+            'suscripcion_id'
         ]
-        # read_only_fields aquí son campos del modelo User que no pueden ser modificados
-        # directamente al crearlos (Django los gestiona), pero pueden ser leídos después.
-        # Los campos `write_only` definidos arriba no necesitan estar en `read_only_fields`
-        # porque su naturaleza `write_only` ya implica que no se leerán.
         read_only_fields = [
             'id', 'is_active', 'is_staff', 'is_superuser',
-            'date_joined',
-            'last_login'
+            'date_joined', 'last_login'
         ]
-
-        # extra_kwargs para configurar requisitos y valores por defecto
         extra_kwargs = {
             'first_name': {'required': True},
             'last_name': {'required': True},
             'email': {'required': True},
             'ci': {'required': True},
-            'telefono': {'required': False, 'allow_null': True},  # Explicitamente opcional y nulo
-            'direccion': {'required': False, 'allow_null': True},  # Explicitamente opcional y nulo
-            'role': {'required': False, 'default': 'CLIENTE'},  # Rol por defecto si no se especifica
+            'telefono': {'required': False, 'allow_null': True},
+            'direccion': {'required': False, 'allow_null': True},
             'empresa': {'required': False, 'allow_null': True},
-            # Empresa es opcional al registro, pero validado después
         }
 
     def validate(self, attrs):
@@ -104,86 +109,86 @@ class UserRegisterSerializer(serializers.ModelSerializer):
         if attrs['password'] != attrs['password2']:
             raise serializers.ValidationError({"password": "Las contraseñas no coinciden"})
 
-        # 2. Validar que el rol no sea 'SUPERUSER' para registro directo
-        if attrs.get('role') == 'SUPERUSER':
+        # Obtener el rol. Si viene como ID, PrimaryKeyRelatedField ya lo convierte a instancia en attrs.
+        user_role_instance = attrs.get('role')
+
+        # Si no se proporciona rol, intenta asignar el rol 'Cliente' por defecto
+        if user_role_instance is None:
+            try:
+                default_client_role = Role.objects.get(name='Cliente')
+                attrs['role'] = default_client_role
+                user_role_instance = default_client_role
+            except Role.DoesNotExist:
+                raise serializers.ValidationError(
+                    {"role": "El rol 'Cliente' por defecto no existe. Por favor, créalo en el administrador."})
+
+        # 2. Validar que el rol no sea 'Super Usuario' para registro directo
+        if user_role_instance.name == 'Super Usuario':
             raise serializers.ValidationError({"role": "No se permite el registro directo como Super Usuario."})
 
         empresa_nombre = attrs.get('empresa_nombre')
         empresa_nit = attrs.get('empresa_nit')
         suscripcion_id = attrs.get('suscripcion_id')
-        user_role = attrs.get('role', 'CLIENTE')  # Obtener el rol, por defecto 'CLIENTE'
 
         # Lógica de validación de empresa para SuperUsuarios (creando nueva empresa)
-        # Esto ocurre si el SuperUsuario envía datos de empresa (nombre o nit o suscripcion_id)
         if self.context['request'].user and self.context['request'].user.is_superuser:
-            # Si se intenta crear una nueva empresa (alguno de los campos está presente)
             if empresa_nombre or empresa_nit or suscripcion_id:
                 if not empresa_nombre or not empresa_nit or not suscripcion_id:
                     raise serializers.ValidationError(
                         {
                             "empresa_data": "Nombre de empresa, NIT y ID de suscripción son requeridos para crear una nueva empresa."}
                     )
-                # Validar unicidad de nombre y NIT para nuevas empresas
                 if Empresa.objects.filter(nombre=empresa_nombre).exists():
-                    raise serializers.ValidationError(
-                        {"empresa_nombre": "Ya existe una empresa con este nombre."}
-                    )
+                    raise serializers.ValidationError({"empresa_nombre": "Ya existe una empresa con este nombre."})
                 if Empresa.objects.filter(nit=empresa_nit).exists():
+                    raise serializers.ValidationError({"empresa_nit": "Ya existe una empresa con este NIT/RUC."})
+
+                if user_role_instance.name not in ['Cliente', 'Administrador']:
                     raise serializers.ValidationError(
-                        {"empresa_nit": "Ya existe una empresa con este NIT/RUC."}
+                        {"role": "El rol debe ser 'Cliente' o 'Administrador' si se registra una nueva empresa."}
                     )
-                # Si un superusuario crea una empresa, el rol del usuario asignado como admin_empresa
-                # DEBE ser ADMINISTRATIVO o CLIENTE (si es un cliente que luego se actualiza su rol)
-                if user_role not in ['CLIENTE', 'ADMINISTRATIVO']:
-                    raise serializers.ValidationError(
-                        {"role": "El rol debe ser 'CLIENTE' o 'ADMINISTRATIVO' si se registra una nueva empresa."}
-                    )
-                # Si el superusuario crea una empresa, el campo 'empresa' (FK a Empresa)
-                # en el usuario NO debe ser enviado, porque la empresa se creará.
                 if attrs.get('empresa'):
                     raise serializers.ValidationError(
-                        {"empresa": "No se puede asignar a una empresa existente al crear una nueva empresa."})
+                        {"empresa": "No se puede asignar a una empresa existente al crear una nueva empresa."}
+                    )
 
         # Lógica de validación para ADMINISTRATIVOS o EMPLEADOS que crean usuarios
-        # (Deben asociar el usuario a su propia empresa, si el rol no es 'CLIENTE')
-        elif not self.context['request'].user.is_superuser:  # Si no es SuperUsuario
-            # Si el rol es diferente de 'CLIENTE'
-            if user_role != 'CLIENTE':
+        elif not self.context['request'].user.is_superuser:
+            if user_role_instance.name != 'Cliente':
                 request_user = self.context['request'].user
-                if not request_user.empresa:
+                # Es importante verificar que el usuario tenga una empresa asociada para que pueda crear otros usuarios de empresa
+                if not (hasattr(request_user, 'empresa') and request_user.empresa):
                     raise serializers.ValidationError({
-                                                          "role": "Solo un administrador de empresa puede crear usuarios con roles diferentes a 'CLIENTE'."})
+                        "role": "Solo un administrador de empresa puede crear usuarios con roles diferentes a 'Cliente'."})
 
-                # Si el admin de empresa envía una empresa_id, debe ser su propia empresa.
+                # Si intenta asignar una empresa, debe ser la suya.
                 if attrs.get('empresa') and attrs['empresa'].id != request_user.empresa.id:
                     raise serializers.ValidationError(
-                        {"empresa": "No tienes permiso para crear usuarios en otra empresa."})
-
+                        {"empresa": "No tienes permiso para crear usuarios en otra empresa."}
+                    )
                 # Si el admin de empresa NO envía una empresa_id, se la asignamos automáticamente.
                 if not attrs.get('empresa'):
                     attrs['empresa'] = request_user.empresa
 
-            # Si el rol es 'CLIENTE' y se envían datos de empresa_nombre o empresa_nit
-            if user_role == 'CLIENTE' and (empresa_nombre or empresa_nit or suscripcion_id):
+            # Si el rol es 'Cliente' y se envían datos de empresa_nombre o empresa_nit
+            if user_role_instance.name == 'Cliente' and (empresa_nombre or empresa_nit or suscripcion_id):
                 raise serializers.ValidationError(
-                    {"empresa_data": "No se pueden proporcionar datos de empresa al crear un cliente."})
+                    {"empresa_data": "No se pueden proporcionar datos de empresa al crear un cliente."}
+                )
 
-            # Si no es SuperUser y el rol no es 'CLIENTE', la empresa es obligatoria
-            if user_role != 'CLIENTE' and not attrs.get('empresa'):
-                # Esta validación debería ser cubierta por la lógica anterior, pero como fallback
+            # Para roles que no son 'Cliente', la cuenta debe estar asignada a una empresa
+            if user_role_instance.name != 'Cliente' and not attrs.get('empresa'):
                 raise serializers.ValidationError(
-                    {"empresa": "Para roles diferentes a 'CLIENTE', la cuenta debe ser asignada a una empresa."})
-
-        # Si el usuario no es superuser ni administrador, y el rol no es 'CLIENTE', entonces error
-        # Esta validación ya la cubre la del `if user_role != 'CLIENTE'` de arriba.
+                    {"empresa": "Para roles diferentes a 'Cliente', la cuenta debe ser asignada a una empresa."}
+                )
 
         # Asegurarse que los campos de nueva empresa no se envíen si el rol es CLIENTE
-        if user_role == 'CLIENTE' and (empresa_nombre or empresa_nit or suscripcion_id):
+        if user_role_instance.name == 'Cliente' and (empresa_nombre or empresa_nit or suscripcion_id):
             raise serializers.ValidationError(
-                {"empresa_data": "No se pueden proporcionar datos de empresa al crear un cliente."})
+                {"empresa_data": "No se pueden proporcionar datos de empresa al crear un cliente."}
+            )
 
         # Eliminar campos de empresa si no son relevantes para el tipo de creación
-        # Esto es importante para que super().validate no falle si los campos no van al modelo User
         if not (self.context['request'].user and self.context['request'].user.is_superuser and (
                 empresa_nombre or empresa_nit or suscripcion_id)):
             attrs.pop('empresa_nombre', None)
@@ -193,34 +198,31 @@ class UserRegisterSerializer(serializers.ModelSerializer):
         return super().validate(attrs)
 
     def create(self, validated_data):
-        with transaction.atomic():  # Asegura que la creación de usuario y empresa sea atómica
+        with transaction.atomic():
+            validated_data.pop('password2')
 
-            validated_data.pop('password2')  # 'password2' solo es para validación, no para guardar
-
-            empresa = validated_data.pop('empresa', None)  # Podría ser un objeto Empresa si lo asignó un admin
+            empresa_instance = validated_data.pop('empresa', None)  # Renombrado para claridad
             empresa_nombre = validated_data.pop('empresa_nombre', None)
             empresa_nit = validated_data.pop('empresa_nit', None)
-            suscripcion_id = validated_data.pop('suscripcion_id', None)  # ID de suscripción para la nueva empresa
+            suscripcion_id = validated_data.pop('suscripcion_id', None)
 
-            # Crea el usuario primero con los datos directamente para el modelo CustomUser
+            role_instance = validated_data.pop('role', None)
+
             user = User.objects.create(
                 username=validated_data['username'],
                 email=validated_data['email'],
                 first_name=validated_data['first_name'],
                 last_name=validated_data['last_name'],
-                role=validated_data.get('role', 'CLIENTE'),
+                role=role_instance,  # Asigna la instancia del rol directamente
                 telefono=validated_data.get('telefono'),
                 ci=validated_data.get('ci'),
                 direccion=validated_data.get('direccion'),
-                # La empresa se asignará después si es una nueva o si fue asignada por un admin
             )
             user.set_password(validated_data['password'])
 
-            # Asigna la empresa si ya existe y fue asignada (por un admin de empresa)
-            if empresa:
-                user.empresa = empresa
+            if empresa_instance:  # Usar la instancia de empresa existente si se proporcionó
+                user.empresa = empresa_instance
 
-            # Lógica para crear una nueva empresa si el SuperUsuario lo indicó
             if empresa_nombre and empresa_nit and suscripcion_id:
                 try:
                     suscripcion_obj = Suscripcion.objects.get(id=suscripcion_id)
@@ -228,14 +230,13 @@ class UserRegisterSerializer(serializers.ModelSerializer):
                         nombre=empresa_nombre,
                         nit=empresa_nit,
                         suscripcion=suscripcion_obj,
-                        admin_empresa=user  # Asignar el usuario recién creado como admin de esta nueva empresa
+                        admin_empresa=user
                     )
-                    user.empresa = new_empresa  # Asignar el usuario a la nueva empresa
+                    user.empresa = new_empresa
                 except Suscripcion.DoesNotExist:
-                    # Esto debería ser capturado por la validación, pero como fallback
                     raise serializers.ValidationError({"suscripcion_id": "La suscripción seleccionada no existe."})
 
-            user.save()  # Guardar el usuario con su contraseña y la empresa asignada
+            user.save()
         return user
 
 
@@ -244,8 +245,16 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     empresa = serializers.PrimaryKeyRelatedField(
         queryset=Empresa.objects.all(), required=False, allow_null=True
     )
-    # Para mostrar los detalles de la empresa en la respuesta (read_only)
     empresa_detail = EmpresaSerializer(source='empresa', read_only=True)
+
+    # 'role' acepta un ID de Role para escritura
+    role = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(), required=False, allow_null=True
+    )
+
+    # Campo opcional para cambio de contraseña
+    password = serializers.CharField(write_only=True, required=False, style={'input_type': 'password'})
+    password2 = serializers.CharField(write_only=True, required=False, style={'input_type': 'password'})
 
     class Meta:
         model = User
@@ -253,60 +262,103 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'first_name', 'last_name',
             'role', 'telefono', 'ci', 'direccion', 'is_active', 'is_staff', 'is_superuser',
             'empresa', 'empresa_detail',
-            'date_joined',  # Incluir para que sea parte de la representación aunque sea read_only
-            'last_login'  # Incluir para que sea parte de la representación aunque sea read_only
+            'date_joined',
+            'last_login',
+            'password',  # Incluir aquí para que el serializer lo procese
+            'password2',  # Incluir aquí para que el serializer lo procese
         ]
-        # Campos que no pueden ser modificados por este serializador (generalmente los IDs y campos auto-gestionados)
         read_only_fields = [
             'id', 'username', 'email', 'date_joined', 'last_login',
-            'is_active', 'is_staff', 'is_superuser'
         ]
+        # is_active, is_staff, is_superuser ya no son read_only aquí porque un superuser los puede cambiar.
+        # El control de permisos para estos campos se maneja en las vistas o en el método validate.
 
     def validate(self, attrs):
-        current_user = self.instance  # El objeto de usuario que se está actualizando
-        request_user = self.context['request'].user  # El usuario que hace la petición
+        current_user = self.instance  # El usuario que se está actualizando
+        request_user = self.context['request'].user  # El usuario que realiza la solicitud
 
-        new_role = attrs.get('role', current_user.role)
-        new_empresa = attrs.get('empresa', current_user.empresa)
+        # Validar contraseñas si se proporcionan
+        password = attrs.get('password')
+        password2 = attrs.get('password2')
+        if password or password2:
+            if password != password2:
+                raise serializers.ValidationError({"password": "Las nuevas contraseñas no coinciden."})
+            if not password:  # Si se proporciona password2 pero no password
+                raise serializers.ValidationError({"password": "Debe proporcionar una nueva contraseña."})
+            # Removemos password2 porque no se guarda en el modelo directamente
+            attrs.pop('password2', None)
+
+        # Obtener el nuevo rol. Si no se proporciona en attrs, usar el rol actual del usuario.
+        # `attrs.get('role')` ya es la instancia del Role gracias a PrimaryKeyRelatedField
+        new_role_instance = attrs.get('role', current_user.role)
+
+        # Validar que `new_role_instance` no sea `None` si `role` fue proporcionado en `attrs`
+        # pero `PrimaryKeyRelatedField` no encontró un objeto Role válido (ej. ID inexistente)
+        if attrs.get('role') is not None and new_role_instance is None:
+            raise serializers.ValidationError({"role": "El ID de rol proporcionado no es válido."})
+
+        new_empresa_instance = attrs.get('empresa', current_user.empresa)  # Obtener la instancia de empresa
 
         # 1. Validación de Super_Usuario y empresa
-        if new_role == 'SUPERUSER' and new_empresa:
+        if new_role_instance and new_role_instance.name == 'Super Usuario' and new_empresa_instance:
             raise serializers.ValidationError(
-                {"empresa": "Un Super_Usuario no debe estar asignado a una empresa específica."}
+                {"empresa": "Un Super Usuario no debe estar asignado a una empresa específica."}
             )
 
-        # 2. Validación: Si el rol no es Super_Usuario, debe tener una empresa asignada
-        if new_role != 'SUPERUSER' and not new_empresa:
+        # 2. Validación: Si el rol no es 'Super Usuario', debe tener una empresa asignada
+        if new_role_instance and new_role_instance.name != 'Super Usuario' and not new_empresa_instance:
             raise serializers.ValidationError(
-                {"empresa": "Un usuario que no es Super_Usuario debe estar asignado a una empresa."}
+                {"empresa": "Un usuario que no es Super Usuario debe estar asignado a una empresa."}
             )
 
-        # 3. Validar permisos de asignación de empresa para no-SuperUsuarios
-        if not request_user.is_superuser:  # Si quien actualiza NO es Super_Usuario
-            if new_empresa and new_empresa.id != request_user.empresa.id:
+        # 3. Validar permisos de asignación de empresa y flags de usuario para no-SuperUsuarios
+        if not request_user.is_superuser:
+            # Un administrador de empresa NO puede cambiar el rol de Super Usuario
+            if new_role_instance and new_role_instance.name == 'Super Usuario' and new_role_instance != current_user.role:
                 raise serializers.ValidationError(
-                    {"empresa": "No tienes permiso para asignar usuarios a otra empresa."})
+                    {"role": "Solo un Super Usuario puede asignar el rol 'Super Usuario'."})
 
-            # Si el rol cambia de CLIENTE a otro (ADMINISTRATIVO/EMPLEADO)
-            if current_user.role == 'CLIENTE' and new_role != 'CLIENTE':
-                # Y no tiene empresa asignada (lo cual debería ser obligatorio por la validación 2)
-                if not new_empresa:
-                    raise serializers.ValidationError(
-                        {"empresa": "Para asignar un rol de empresa, el usuario debe estar asignado a una empresa."}
-                    )
-                # Y la empresa asignada no es la del administrador que lo modifica
-                if new_empresa.id != request_user.empresa.id:
-                    raise serializers.ValidationError({"empresa": "Solo puedes asignar usuarios a tu propia empresa."})
+            # Un administrador de empresa NO puede desasignar el rol de Super Usuario de otro usuario
+            if current_user.role and current_user.role.name == 'Super Usuario' and (
+                    not new_role_instance or new_role_instance.name != 'Super Usuario'
+            ):
+                raise serializers.ValidationError({
+                    "role": "Solo un Super Usuario puede modificar o eliminar el rol 'Super Usuario' de otro usuario."})
+
+            # Un administrador de empresa solo puede modificar usuarios de SU propia empresa
+            # Y no puede cambiar la empresa de un usuario
+            if current_user.empresa and request_user.empresa and current_user.empresa.id != request_user.empresa.id:
+                raise serializers.ValidationError(
+                    {"detail": "No tienes permiso para modificar usuarios de otra empresa."}
+                )
+            # Asegura que no se intente cambiar la empresa si no es superusuario
+            if new_empresa_instance and request_user.empresa and new_empresa_instance.id != request_user.empresa.id:
+                raise serializers.ValidationError(
+                    {"empresa": "No tienes permiso para asignar usuarios a otra empresa."}
+                )
+            # Además, si el request_user no es superuser, no pueden cambiar 'is_active', 'is_staff', 'is_superuser'
+            # y estas propiedades deben ser eliminadas de attrs si se intentan cambiar
+            if 'is_active' in attrs and attrs['is_active'] != current_user.is_active:
+                raise serializers.ValidationError(
+                    {"is_active": "Solo un Super Usuario puede cambiar el estado de actividad."})
+            if 'is_staff' in attrs and attrs['is_staff'] != current_user.is_staff:
+                raise serializers.ValidationError(
+                    {"is_staff": "Solo un Super Usuario puede cambiar el estado de staff."})
+            if 'is_superuser' in attrs and attrs['is_superuser'] != current_user.is_superuser:
+                raise serializers.ValidationError(
+                    {"is_superuser": "Solo un Super Usuario puede cambiar el estado de superusuario."})
 
         return attrs
 
     def update(self, instance, validated_data):
-        # Manejo especial para la contraseña si se envía (no está en 'fields' por seguridad)
         password = validated_data.pop('password', None)
         if password:
             instance.set_password(password)
 
-        # Actualiza el resto de campos validados
+        # Si el rol se ha actualizado, PrimaryKeyRelatedField ya lo convierte a instancia
+        # Así que simplemente se asigna
+        # validated_data.pop('password2', None) ya se hizo en validate
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 

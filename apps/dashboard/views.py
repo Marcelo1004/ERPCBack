@@ -3,24 +3,27 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import Count, Sum, F, ExpressionWrapper, DecimalField
+from django.db.models import Count, Sum, F, ExpressionWrapper, DecimalField, Q
 from django.db.models.functions import TruncMonth
 from rest_framework.permissions import IsAuthenticated, BasePermission
 from datetime import datetime, timedelta
 from django.utils import timezone
+from django.db import models  # Asegúrate de importar models si usas F, Q, etc.
 
 # Importa tus modelos. ¡ASEGÚRATE DE QUE ESTAS RUTAS SEAN CORRECTAS!
-from apps.usuarios.models import User
+from apps.usuarios.models import CustomUser
 from apps.empresas.models import Empresa
 from apps.sucursales.models import Sucursal
 from apps.almacenes.models import Almacen
 from apps.categorias.models import Categoria
 from apps.productos.models import Producto
 from apps.suscripciones.models import Suscripcion
+from apps.proveedores.models import Proveedor  # ¡NUEVO! Importamos el modelo Proveedor
 
-# === ¡IMPORTACIONES DE MODELOS DE VENTAS Y DETALLEVENTA! ===
+# Importaciones de modelos de Ventas y DetalleVenta
 from apps.ventas.models import Venta, DetalleVenta
 
+# Asegúrate de que este serializer exista y esté definido correctamente
 from .serializers import DashboardERPSerializer
 
 
@@ -31,9 +34,14 @@ class IsWorkerUser(BasePermission):
     """
 
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and
-                    (request.user.is_superuser or
-                     request.user.role in ['ADMINISTRATIVO', 'EMPLEADO']))
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.is_superuser:
+            return True
+
+        return user.role in ['ADMINISTRATIVO', 'EMPLEADO']
 
 
 class DashboardERPView(APIView):
@@ -57,41 +65,52 @@ class DashboardERPView(APIView):
             'inventory_by_warehouse': [],
             'recent_activities': [],  # Aseguramos que esté aquí desde el inicio
             'total_empresas': 0,
+            'total_proveedores': 0,  # ¡NUEVO! Inicializamos el total de proveedores
         }
 
         try:
-            # Determinamos los querysets base que serán filtrados por empresa o serán globales
-            if user.is_superuser:
-                user_qs = User.objects.all()
-                empresa_qs = Empresa.objects.all()
-                sucursal_qs = Sucursal.objects.all()
-                almacen_qs = Almacen.objects.all()
-                categoria_qs = Categoria.objects.all()
-                producto_qs = Producto.objects.all()
-                venta_qs = Venta.objects.all()
-                detalle_venta_qs = DetalleVenta.objects.all()
+            empresa_filter = Q()
 
-            elif user.empresa:
-                empresa_obj = user.empresa
-                user_qs = User.objects.filter(empresa=empresa_obj)
-                empresa_qs = Empresa.objects.filter(id=empresa_obj.id)
-                sucursal_qs = Sucursal.objects.filter(empresa=empresa_obj)
-                almacen_qs = Almacen.objects.filter(empresa=empresa_obj)
-                categoria_qs = Categoria.objects.filter(empresa=empresa_obj)
-                producto_qs = Producto.objects.filter(empresa=empresa_obj)
-
-                # Asumo que Venta tiene una ForeignKey a Empresa.
-                venta_qs = Venta.objects.filter(empresa=empresa_obj)
-                # Asumo que DetalleVenta se relaciona con Venta, y Venta con Empresa.
-                detalle_venta_qs = DetalleVenta.objects.filter(venta__empresa=empresa_obj)
+            if not user.is_superuser:
+                if hasattr(user, 'empresa') and user.empresa:
+                    # DEBUG: Imprime la empresa asociada al usuario
+                    print(
+                        f"DEBUG: User '{user.email}' is associated with company: {user.empresa.nombre} (ID: {user.empresa.id})")
+                    empresa_filter = Q(empresa=user.empresa)
+                else:
+                    # DEBUG: Imprime si el usuario no tiene empresa
+                    print(f"DEBUG: Non-superuser '{user.email}' has no associated company or user.empresa is None.")
+                    return Response(
+                        {"message": "No hay datos de dashboard disponibles para su cuenta o empresa."},
+                        status=status.HTTP_200_OK
+                    )
             else:
-                return Response(
-                    {"message": "No hay datos de dashboard disponibles para su cuenta o empresa."},
-                    status=status.HTTP_200_OK
-                )
+                # DEBUG: Usuario superusuario
+                print(f"DEBUG: User '{user.email}' is a Superuser.")
+
+            # Aplicamos el filtro a todos los QuerySets
+            user_qs = CustomUser.objects.filter(empresa_filter)
+            empresa_qs = Empresa.objects.all() if user.is_superuser else Empresa.objects.filter(id=user.empresa.id)
+            sucursal_qs = Sucursal.objects.filter(empresa_filter)
+            almacen_qs = Almacen.objects.filter(empresa_filter)
+            categoria_qs = Categoria.objects.filter(empresa_filter)
+            producto_qs = Producto.objects.filter(empresa_filter)
+
+            # DEBUG: Queryset de Proveedores ANTES de contar
+            proveedor_qs = Proveedor.objects.filter(empresa_filter)
+            print(f"DEBUG: Proveedor queryset filter applied: {empresa_filter}")
+            print(f"DEBUG: Proveedores found by filter: {proveedor_qs.count()}")
+            # DEBUG: Imprime los IDs y nombres de los proveedores encontrados
+            print(f"DEBUG: Details of providers found: {list(proveedor_qs.values('id', 'nombre', 'empresa__nombre'))}")
+
+            dashboard_data['total_proveedores'] = proveedor_qs.count()
+
+            # Querysets para ventas, considerando la relación con la empresa
+            venta_qs = Venta.objects.filter(empresa_filter)
+            detalle_venta_qs = DetalleVenta.objects.filter(venta__in=venta_qs)
 
             # -----------------------------------------------------------
-            # CÁLCULO DE MÉTRICAS EXISTENTES Y NUEVAS
+            # CÁLCULO DE MÉTRICAS
             # -----------------------------------------------------------
 
             # Métricas Core
@@ -110,9 +129,10 @@ class DashboardERPView(APIView):
             productos_bajo_stock_qs = producto_qs.filter(stock__lt=10).values_list('nombre', flat=True)
             dashboard_data['productos_bajo_stock'] = list(productos_bajo_stock_qs)
 
+            # Distribución de suscripciones (solo para superusuarios)
             if user.is_superuser:
-                dashboard_data['total_empresas'] = empresa_qs.count()
-                suscripciones_dist = empresa_qs.values(
+                dashboard_data['total_empresas'] = Empresa.objects.count()
+                suscripciones_dist = Empresa.objects.values(
                     plan_nombre=F('suscripcion__nombre')
                 ).annotate(
                     cantidad_empresas=Count('id')
@@ -122,38 +142,54 @@ class DashboardERPView(APIView):
                 dashboard_data['total_empresas'] = 0
                 dashboard_data['distribucion_suscripciones'] = []
 
-            # === 1. VENTAS MENSUALES (monthly_sales) ===
+            # Ventas Mensuales
             monthly_sales_data = []
             today = timezone.now()
-            for i in range(6, -1, -1):  # Desde 6 meses atrás hasta el mes actual
-                month_date = (today - timedelta(days=30 * i)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                next_month_start = (month_date + timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0,
-                                                                             microsecond=0)
+            start_date_for_charts = (today - timedelta(days=180)).replace(day=1, hour=0, minute=0, second=0,
+                                                                          microsecond=0)
 
-                # Filtra las ventas para el rango del mes usando venta_qs (que ya está filtrado por empresa si aplica)
-                monthly_sum_agg = venta_qs.filter(
-                    fecha__gte=month_date,
-                    fecha__lt=next_month_start,
-                ).aggregate(total_ventas=Sum('monto_total'))['total_ventas']
+            monthly_sales_results = venta_qs.filter(
+                fecha__gte=start_date_for_charts
+            ).annotate(
+                month_start=TruncMonth('fecha')
+            ).values('month_start').annotate(
+                total_ventas=Sum('monto_total')
+            ).order_by('month_start')
+
+            current_month_iterator = start_date_for_charts
+            while current_month_iterator <= today:
+                month_name = current_month_iterator.strftime('%b')
+
+                sales_for_month = next((
+                    item for item in monthly_sales_results
+                    if item['month_start'].month == current_month_iterator.month and
+                       item['month_start'].year == current_month_iterator.year
+                ), None)
 
                 monthly_sales_data.append({
-                    'name': month_date.strftime('%b'),
-                    'Ventas': float(monthly_sum_agg) if monthly_sum_agg else 0.00
+                    'name': month_name,
+                    'Ventas': float(sales_for_month['total_ventas']) if sales_for_month and sales_for_month[
+                        'total_ventas'] is not None else 0.00
                 })
-            dashboard_data['monthly_sales'] = monthly_sales_data
-            print(f"DEBUG: Monthly Sales Data: {monthly_sales_data}")  # DEBUG PRINT
 
-            # === 2. PRODUCTOS MÁS VENDIDOS (top_products) ===
+                if current_month_iterator.month == 12:
+                    current_month_iterator = current_month_iterator.replace(year=current_month_iterator.year + 1,
+                                                                            month=1, day=1)
+                else:
+                    current_month_iterator = current_month_iterator.replace(month=current_month_iterator.month + 1,
+                                                                            day=1)
+
+            dashboard_data['monthly_sales'] = monthly_sales_data
+
+            # Productos Más Vendidos
             top_products_data = []
-            # Usa detalle_venta_qs (ya filtrado por empresa si aplica)
             top_products_results = detalle_venta_qs.values(
                 'producto__nombre'
             ).annotate(
-                # Suma el valor total de la venta de este producto (cantidad * precio_unitario del detalle)
                 sales=Sum(F('cantidad') * F('precio_unitario'),
                           output_field=DecimalField(max_digits=15, decimal_places=2)),
-                units=Sum('cantidad')  # Suma la cantidad total de unidades vendidas de este producto
-            ).order_by('-sales')[:5]  # Top 5 productos por valor de ventas
+                units=Sum('cantidad')
+            ).order_by('-sales')[:5]
 
             for item in top_products_results:
                 top_products_data.append({
@@ -162,9 +198,8 @@ class DashboardERPView(APIView):
                     'units': item['units'] or 0
                 })
             dashboard_data['top_products'] = top_products_data
-            print(f"DEBUG: Top Products Data: {top_products_data}")  # DEBUG PRINT
 
-            # === 3. DISTRIBUCIÓN POR CATEGORÍA (category_distribution) ===
+            # Distribución por Categoría
             category_distribution_data = list(
                 producto_qs.values(name=F('categoria__nombre')).annotate(
                     products_count=Count('id')
@@ -173,9 +208,8 @@ class DashboardERPView(APIView):
             dashboard_data['category_distribution'] = [
                 item for item in category_distribution_data if item['name'] is not None
             ]
-            print(f"DEBUG: Category Distribution Data: {dashboard_data['category_distribution']}")  # DEBUG PRINT
 
-            # === 4. INVENTARIO POR ALMACÉN (inventory_by_warehouse) ===
+            # Inventario por Almacén
             inventory_by_warehouse_data = list(
                 almacen_qs.annotate(
                     total_value=Sum(F('productos__precio') * F('productos__stock'),
@@ -192,14 +226,12 @@ class DashboardERPView(APIView):
                         'total_value': float(item['total_value'] or 0.00),
                         'product_count': item['product_count'] or 0
                     })
-            print(f"DEBUG: Inventory By Warehouse Data: {dashboard_data['inventory_by_warehouse']}")  # DEBUG PRINT
 
-            # === 5. ACTIVIDADES RECIENTES (recent_activities) ===
-            recent_activities_list = []  # Usamos un nombre de variable diferente para evitar cualquier conflicto
+            # Actividades Recientes
+            recent_activities_list = []
 
-            # 5.1 Actividades: Nuevas Ventas/Pedidos
+            # Actividades: Nuevas Ventas/Pedidos
             for venta in venta_qs.order_by('-fecha')[:5]:
-                # Aseguramos que usuario no sea None antes de intentar acceder a first_name
                 user_name = venta.usuario.first_name if venta.usuario and venta.usuario.first_name else 'Usuario Desconocido'
                 recent_activities_list.append({
                     'id': f"venta-{venta.id}",
@@ -209,9 +241,9 @@ class DashboardERPView(APIView):
                     'entity_name': f"Pedido #{venta.id}"
                 })
 
-            # 5.2 Actividades: Nuevos Usuarios
+            # Actividades: Nuevos Usuarios
             for new_user in user_qs.order_by('-date_joined')[:3]:
-                if not new_user.is_superuser:  # No incluir superusuarios aquí
+                if not new_user.is_superuser:
                     recent_activities_list.append({
                         'id': f"user-{new_user.id}",
                         'description': f"Nuevo usuario registrado: {new_user.first_name or new_user.email}.",
@@ -220,7 +252,7 @@ class DashboardERPView(APIView):
                         'user_name': new_user.first_name,
                     })
 
-            # 5.3 Actividades: Productos Bajo Stock (como alerta)
+            # Actividades: Productos Bajo Stock (como alerta)
             for prod_name in dashboard_data['productos_bajo_stock'][:3]:
                 recent_activities_list.append({
                     'id': f"stock-alert-{prod_name}-{timezone.now().timestamp()}",
@@ -230,12 +262,9 @@ class DashboardERPView(APIView):
                     'entity_name': prod_name,
                 })
 
-            # Ordenar todas las actividades por fecha descendente y limitar
             dashboard_data['recent_activities'] = sorted(recent_activities_list, key=lambda x: x['timestamp'],
                                                          reverse=True)[:10]
-            print(f"DEBUG: Recent Activities Data: {dashboard_data['recent_activities']}")  # DEBUG PRINT
 
-            # Serializar y devolver la respuesta
             serializer = DashboardERPSerializer(dashboard_data)
             return Response(serializer.data)
 

@@ -4,5 +4,5 @@ from .models import Suscripcion
 class SuscripcionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Suscripcion
-        fields = ['id', 'nombre', 'descripcion', 'cantidad_usuarios_permitidos']
+        fields = ['id', 'nombre', 'descripcion', 'cantidad_usuarios_permitidos','precio']
 

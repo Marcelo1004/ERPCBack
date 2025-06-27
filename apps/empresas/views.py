@@ -1,62 +1,115 @@
-from rest_framework import generics, permissions
+# apps/empresas/views.py
+
+from rest_framework import viewsets, permissions, status
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.response import Response  # Necesitarás Response para manejar errores o respuestas específicas
+
 from .models import Empresa
 from .serializers import EmpresaSerializer
-from apps.usuarios.views import IsSuperUser, IsAdminUserOrSuperUser # Importa tus permisos personalizados
 
+# Mantienes tu clase EmpresaPermission tal cual, es muy buena.
 class EmpresaPermission(permissions.BasePermission):
-    def has_permission(self, request, view):
-        # Permitir listar empresas (solo superusuarios pueden crear en esta vista)
-        if view.action == 'list' and request.user.is_superuser:
-            return True
-        # Permitir creación de empresas (solo superusuarios)
-        if view.action == 'create' and request.user.is_superuser:
-            return True
-        # Para retrieve, update, destroy, el permiso se verifica en has_object_permission
-        return request.user and request.user.is_authenticated
+    """
+    Permiso personalizado para la gestión de Empresas.
+    - Superusuarios: Acceso total a todas las empresas.
+    - Administradores de Empresa: Solo pueden ver/actualizar SU propia empresa.
+    - Otros usuarios autenticados: Solo pueden ver SU propia empresa.
+    """
 
-    def has_object_permission(self, request, view, obj):
-        # Superusuario siempre tiene permiso total
+    def has_permission(self, request, view):
+        # 1. Verificar si el usuario está autenticado. Si no, denegar inmediatamente.
+        if not request.user or request.user.is_anonymous:  # Usar is_anonymous es más claro para no autenticados
+            return False
+
+        # 2. Si es superusuario, siempre tiene permiso en el nivel de vista.
+        # Un superusuario puede listar todas las empresas y crear nuevas.
         if request.user.is_superuser:
             return True
 
-        # Si el usuario es ADMINISTRATIVO o EMPLEADO
-        if request.user.is_authenticated and request.user.empresa == obj:
-            # POST no debería llegar aquí si ya se maneja en has_permission
-            if request.method in permissions.SAFE_METHODS: # GET (lectura)
+        # 3. Para usuarios no superusuarios (Admin, Empleado, Cliente),
+        # solo se les permite interactuar con su propia empresa.
+        # No se les permite listar TODAS las empresas ('list' action) ni crear nuevas empresas ('create' action) desde aquí.
+        # Esto es crucial: si no son superusuarios, la vista de listado/creación se les deniega aquí.
+        if view.action in ['list', 'create']:
+            raise PermissionDenied("Solo los superusuarios pueden listar todas las empresas o crear nuevas.")
+
+        # Para 'retrieve', 'update', 'partial_update', 'destroy', el permiso se verificará en has_object_permission.
+        # Si llegamos aquí para estas acciones, el usuario está autenticado,
+        # la verificación real del objeto se hace a continuación.
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        # 1. Superusuario siempre tiene permiso total sobre cualquier objeto de empresa.
+        if request.user.is_superuser:
+            return True
+
+        # 2. Verificar que el usuario está autenticado y tiene una empresa asociada.
+        # Además, el objeto de empresa (`obj`) debe ser la empresa del usuario.
+        if request.user.is_authenticated and \
+                hasattr(request.user, 'empresa') and request.user.empresa is not None and \
+                request.user.empresa.pk == obj.pk:  # Comparamos las PKs de las instancias de empresa
+
+            # 3. Verificar el rol del usuario (accediendo a .name)
+            if not hasattr(request.user, 'role') or request.user.role is None:
+                raise PermissionDenied("Su cuenta no tiene un rol válido asignado.")
+
+            user_role_name = request.user.role.name
+
+            # Métodos seguros (GET): Permitidos para todos los usuarios autenticados de la misma empresa.
+            if request.method in permissions.SAFE_METHODS:
                 return True
-            # PUT/PATCH (actualización)
-            if request.method in ['PUT', 'PATCH'] and request.user.role == 'ADMINISTRATIVO':
+
+            # Métodos de modificación (PUT/PATCH): Solo permitidos para Administradores de la misma empresa.
+            if request.method in ['PUT', 'PATCH'] and user_role_name == 'Administrador':
                 return True
-            # DELETE (ningún admin de empresa puede eliminar la empresa)
-            return False
-        return False # Denegar por defecto
 
-class EmpresaListView(generics.ListCreateAPIView):
+            # DELETE: Ningún administrador de empresa puede eliminar la empresa (solo superusuario).
+            # Aunque la vista permite DELETE, esta lógica de permiso lo deniega para no-superusuarios.
+            if request.method == 'DELETE':
+                return False
+
+        return False  # Denegar cualquier otro caso no cubierto explícitamente
+
+
+class EmpresaViewSet(viewsets.ModelViewSet):
     """
-    Vista para listar todas las empresas (solo SuperUser) y crear una nueva empresa (solo SuperUser).
+    ViewSet para la gestión de Empresas.
+    Proporciona acciones de listado, creación (solo SuperUsuario),
+    recuperación, actualización y eliminación (solo SuperUsuario o Admin de su propia empresa).
     """
-    queryset = Empresa.objects.all()
     serializer_class = EmpresaSerializer
-    permission_classes = [IsSuperUser] # Solo SuperUser puede listar y crear empresas
-
-    def perform_create(self, serializer):
-        serializer.save()
-
-class EmpresaDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Empresa.objects.all()
-    serializer_class = EmpresaSerializer
-    lookup_field = 'pk'
-    permission_classes = [EmpresaPermission] # Usamos el permiso personalizado
+    permission_classes = [EmpresaPermission]  # Aplica tu permiso personalizado
 
     def get_queryset(self):
-        # Si no es superusuario, solo permite ver la empresa a la que pertenece
-        if self.request.user.is_superuser:
-            return Empresa.objects.all()
-        elif self.request.user.is_authenticated and self.request.user.empresa:
-            return Empresa.objects.filter(pk=self.request.user.empresa.pk)
-        return Empresa.objects.none() # No debe ver ninguna empresa si no está ligado
+        # === INICIO DE LA CORRECCIÓN CRÍTICA PARA SWAGGER/AnonymousUser ===
+        # Esta línea es crucial para evitar el AttributeError durante la generación del esquema de drf-yasg.
+        if getattr(self, 'swagger_fake_view', False):
+            return Empresa.objects.none()
+        # === FIN DE LA LA CORRECCIÓN ===
 
-    def perform_destroy(self, instance):
-        instance.delete()
+        user = self.request.user
+        queryset = Empresa.objects.all()
 
+        if user.is_superuser:
+            # Superusuario puede ver todas las empresas.
+            return queryset.order_by('nombre')
+        elif user.is_authenticated and hasattr(user, 'empresa') and user.empresa:
+            # Usuarios autenticados con una empresa asignada:
+            # Solo pueden ver y operar con SU PROPIA empresa.
+            # get_queryset filtra la lista para el usuario actual.
+            return queryset.filter(pk=user.empresa.pk).order_by('nombre')
+
+        # Si el usuario no es superusuario, no está autenticado, o no tiene empresa asignada,
+        # no debe ver ninguna empresa en el listado.
+        return Empresa.objects.none()
+
+    def perform_create(self, serializer):
+        # La clase EmpresaPermission.has_permission ya deniega la acción 'create'
+        # a todos los usuarios que no sean superusuarios.
+        # Por lo tanto, si esta función se ejecuta, el usuario es un superusuario.
+        serializer.save()
+
+    # No necesitas overridear perform_update ni perform_destroy aquí,
+    # ya que la lógica de permisos en EmpresaPermission.has_object_permission
+    # y el filtrado en get_queryset ya manejan las restricciones.
+    # Por ejemplo, para DELETE, has_object_permission ya deniega a no-superusuarios.

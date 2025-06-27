@@ -2,7 +2,7 @@
 
 from django.db import models
 from django.utils import timezone
-from apps.usuarios.models import User  # Asume que User está en apps.usuarios
+from apps.usuarios.models import CustomUser   # Asume que User está en apps.usuarios
 from apps.empresas.models import Empresa  # Asume que Empresa está en apps.empresas
 
 
@@ -10,7 +10,7 @@ class ActividadLog(models.Model):
     """
     Modelo para registrar actividades importantes en el sistema.
     """
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades')
+    user = models.ForeignKey(CustomUser , on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades')
     empresa = models.ForeignKey(Empresa, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades')
 
     timestamp = models.DateTimeField(default=timezone.now, verbose_name="Fecha y Hora")

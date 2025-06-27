@@ -19,7 +19,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'id', 'nombre', 'descripcion', 'precio', 'stock', 'imagen',
             'categoria', 'categoria_detail',
             'almacen', 'almacen_detail',
-            'empresa', 'empresa_detail'
+            'empresa', 'empresa_detail','descuento'
         ]
         extra_kwargs = {
             'categoria': {'write_only': True, 'required': False},
