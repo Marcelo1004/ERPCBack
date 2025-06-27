@@ -1,13 +1,10 @@
-# apps/empresas/views.py
-
-from rest_framework import viewsets, permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response  # Necesitarás Response para manejar errores o respuestas específicas
-
+from rest_framework import viewsets, permissions, status, generics
 from .models import Empresa
-from .serializers import EmpresaSerializer
+from .serializers import EmpresaSerializer,EmpresaMarketplaceSerializer
 
-# Mantienes tu clase EmpresaPermission tal cual, es muy buena.
+
 class EmpresaPermission(permissions.BasePermission):
     """
     Permiso personalizado para la gestión de Empresas.
@@ -39,7 +36,6 @@ class EmpresaPermission(permissions.BasePermission):
         return True
 
     def has_object_permission(self, request, view, obj):
-        # 1. Superusuario siempre tiene permiso total sobre cualquier objeto de empresa.
         if request.user.is_superuser:
             return True
 
@@ -78,7 +74,8 @@ class EmpresaViewSet(viewsets.ModelViewSet):
     recuperación, actualización y eliminación (solo SuperUsuario o Admin de su propia empresa).
     """
     serializer_class = EmpresaSerializer
-    permission_classes = [EmpresaPermission]  # Aplica tu permiso personalizado
+    permission_classes = [EmpresaPermission]
+    queryset = Empresa.objects.all() # Aplica tu permiso personalizado
 
     def get_queryset(self):
         # === INICIO DE LA CORRECCIÓN CRÍTICA PARA SWAGGER/AnonymousUser ===
@@ -104,12 +101,24 @@ class EmpresaViewSet(viewsets.ModelViewSet):
         return Empresa.objects.none()
 
     def perform_create(self, serializer):
-        # La clase EmpresaPermission.has_permission ya deniega la acción 'create'
-        # a todos los usuarios que no sean superusuarios.
-        # Por lo tanto, si esta función se ejecuta, el usuario es un superusuario.
         serializer.save()
 
-    # No necesitas overridear perform_update ni perform_destroy aquí,
-    # ya que la lógica de permisos en EmpresaPermission.has_object_permission
-    # y el filtrado en get_queryset ya manejan las restricciones.
-    # Por ejemplo, para DELETE, has_object_permission ya deniega a no-superusuarios.
+    # --- NUEVAS VISTAS PARA EL MARKETPLACE PÚBLICO ---
+class MarketplaceEmpresaListView(generics.ListAPIView):
+        """
+        Vista para listar empresas activas en el marketplace público.
+        No requiere autenticación.
+        """
+        queryset = Empresa.objects.filter(is_active=True).order_by('nombre')
+        serializer_class = EmpresaMarketplaceSerializer  # Usamos el serializer más ligero
+        permission_classes = []  # ¡IMPORTANTE! Acceso público
+
+class MarketplaceEmpresaDetailView(generics.RetrieveAPIView):
+        """
+        Vista para ver detalles de una empresa específica en el marketplace público.
+        No requiere autenticación.
+        """
+        queryset = Empresa.objects.filter(is_active=True)
+        serializer_class = EmpresaMarketplaceSerializer  # Usamos el serializer más ligero
+        lookup_field = 'pk'
+        permission_classes = []  # ¡IMPORTANTE! Acceso público

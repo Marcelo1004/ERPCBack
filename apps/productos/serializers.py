@@ -20,7 +20,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'categoria', 'categoria_detail',
             'almacen', 'almacen_detail',
             'empresa', 'empresa_detail',
-            'descuento'  # Ensure 'descuento' is in fields
+            'descuento','is_active'  # Ensure 'descuento' is in fields
         ]
         extra_kwargs = {
             'categoria': {'write_only': True, 'required': False},
@@ -48,3 +48,14 @@ class ProductoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("El descuento debe ser un valor entre 0.00 y 1.00.")
 
         return decimal_value
+class ProductoListSerializer(serializers.ModelSerializer):
+    categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
+    empresa_nombre = serializers.CharField(source='empresa.nombre', read_only=True)
+
+    class Meta:
+        model = Producto
+        fields = [
+            'id', 'nombre', 'precio', 'stock', 'imagen',
+            'categoria_nombre', 'empresa_nombre',
+            'descuento', 'is_active' # Include is_active if it's relevant for public listing
+        ]

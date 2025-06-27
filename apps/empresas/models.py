@@ -11,6 +11,7 @@ class Empresa(models.Model):
     email_contacto = models.EmailField(max_length=255, blank=True, null=True, verbose_name="Email de Contacto")
     logo = models.ImageField(upload_to='logos_empresas/', blank=True, null=True, verbose_name="Logo de la Empresa")
     fecha_registro = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Registro")
+    descripcion_corta = models.TextField(blank=True, null=True)  # Para mostrar en la tarjeta del marketplace
 
     suscripcion = models.ForeignKey(
         Suscripcion,

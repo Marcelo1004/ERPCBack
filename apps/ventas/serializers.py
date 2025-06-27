@@ -6,31 +6,26 @@ from apps.productos.models import Producto
 from apps.usuarios.models import CustomUser
 from apps.empresas.models import Empresa
 from .models import Venta, DetalleVenta
-from decimal import Decimal  # <--- ¡ESTA ES LA LÍNEA CRÍTICA A AÑADIR!
+from decimal import Decimal
 
 
 class DetalleVentaSerializer(serializers.ModelSerializer):
-    # Field to display product name, read-only
     producto_nombre = serializers.CharField(source='producto.nombre', read_only=True)
 
     class Meta:
         model = DetalleVenta
         fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'precio_unitario', 'descuento_aplicado']
         read_only_fields = ['producto_nombre']
-        # Optionally, you can explicitly set 'producto' as required if not already by default:
-        # extra_kwargs = {'producto': {'required': True}}
 
     def validate(self, data):
-        # Retrieve and validate quantities and prices
         cantidad = data.get('cantidad')
         precio_unitario = data.get('precio_unitario')
         descuento_aplicado_raw = data.get('descuento_aplicado')
 
-        # Validate 'cantidad'
+        # === Validaciones numéricas ===
         if not isinstance(cantidad, (int, float)) or cantidad <= 0:
             raise serializers.ValidationError({"cantidad": "La cantidad debe ser un número positivo."})
 
-        # Validate and convert 'precio_unitario' to Decimal
         try:
             precio_unitario_decimal = Decimal(str(precio_unitario))
             if precio_unitario_decimal <= 0:
@@ -40,9 +35,10 @@ class DetalleVentaSerializer(serializers.ModelSerializer):
         except Exception:
             raise serializers.ValidationError({"precio_unitario": "El precio unitario no es un número válido."})
 
-        # Validate and convert 'descuento_aplicado' to Decimal
-        descuento_aplicado_value = Decimal('0.0000')  # Default to 0 if not provided or empty
-        if descuento_aplicado_raw is not None and str(descuento_aplicado_raw).strip() != '':
+        descuento_aplicado_value = None
+        if descuento_aplicado_raw is None or str(descuento_aplicado_raw).strip() == '':
+            descuento_aplicado_value = Decimal('0.0000')
+        else:
             try:
                 descuento_aplicado_value = Decimal(str(descuento_aplicado_raw))
             except Exception as e:
@@ -55,112 +51,126 @@ class DetalleVentaSerializer(serializers.ModelSerializer):
 
         data['descuento_aplicado'] = descuento_aplicado_value
 
-        # Validate and convert 'producto' (ForeignKey) to a Product object instance
+        # === Validación y conversión del PRODUCTO ===
         producto_input = data.get('producto')
 
-        if producto_input is None:
+        if producto_input is None:  # Si el producto no se envió o es null
             raise serializers.ValidationError({"producto": "El producto es un campo requerido."})
 
         producto_obj = None
-        if isinstance(producto_input, int):  # If it comes as an ID, fetch the Product object
+        if isinstance(producto_input, int):  # Si viene como ID, busca el objeto Producto
             try:
                 producto_obj = Producto.objects.get(id=producto_input)
             except Producto.DoesNotExist:
                 raise serializers.ValidationError({"producto": f"El producto con ID {producto_input} no existe."})
-        elif isinstance(producto_input, Producto):  # If it's already a Product instance
+        elif isinstance(producto_input, Producto):  # Si ya es una instancia de Producto
             producto_obj = producto_input
-        else:  # Invalid product format
+        else:  # Formato de producto inválido
             raise serializers.ValidationError(
                 {"producto": "Formato de producto inválido (debe ser un ID o un objeto Producto)."})
 
-        data['producto'] = producto_obj  # Ensure validated data contains the Product object
+        data['producto'] = producto_obj  # Asegúrate de que los datos validados contengan el objeto Producto
 
         return data
 
 
 class VentaSerializer(serializers.ModelSerializer):
-    # Use PrimaryKeyRelatedField for ForeignKey relationships to expect IDs
-    # and let DRF handle object conversion.
-    usuario = serializers.PrimaryKeyRelatedField(queryset=CustomUser.objects.all())
-    empresa = serializers.PrimaryKeyRelatedField(queryset=Empresa.objects.all())
-
-    # Nested serializer for sale details
     detalles = DetalleVentaSerializer(many=True)
-
-    # Read-only fields to display related object names
     usuario_nombre = serializers.CharField(source='usuario.first_name', read_only=True, allow_null=True)
     empresa_nombre = serializers.CharField(source='empresa.nombre', read_only=True)
+    origen = serializers.CharField(read_only=True)  # <-- ¡NUEVO! Añadimos origen como campo de solo lectura
 
     class Meta:
         model = Venta
         fields = [
             'id', 'fecha', 'monto_total', 'usuario', 'usuario_nombre',
-            'empresa', 'empresa_nombre', 'estado', 'detalles'
+            'empresa', 'empresa_nombre', 'estado', 'origen', 'detalles'  # <-- Añade 'origen' aquí
         ]
-        # 'monto_total' is calculated, not sent from the frontend, and other name fields are read-only
-        read_only_fields = ['monto_total', 'usuario_nombre', 'empresa_nombre']
+        read_only_fields = ['monto_total', 'usuario_nombre', 'empresa_nombre',
+                            'origen']  # <-- 'origen' también de solo lectura aquí
 
     def create(self, validated_data):
-        # Pop 'detalles' data, as they are handled separately
         detalles_data = validated_data.pop('detalles')
 
-        # 'usuario' and 'empresa' are already object instances due to PrimaryKeyRelatedField
-        # So, no manual fetching is needed here.
+        usuario_id = validated_data.pop('usuario')
+        try:
+            usuario_obj = CustomUser.objects.get(id=usuario_id)
+        except CustomUser.DoesNotExist:
+            raise serializers.ValidationError({"usuario": f"El usuario con ID {usuario_id} no existe."})
+        validated_data['usuario'] = usuario_obj
+
+        empresa_id = validated_data.pop('empresa')
+        try:
+            empresa_obj = Empresa.objects.get(id=empresa_id)
+        except Empresa.DoesNotExist:
+            raise serializers.ValidationError({"empresa": f"La empresa con ID {empresa_id} no existe."})
+        validated_data['empresa'] = empresa_obj
+
+        # Si el origen no se proporciona o no es válido, se usará el valor por defecto del modelo ('MANUAL')
+        # Si se envía explícitamente desde el frontend (ej. 'MARKETPLACE'), validated_data lo tendrá.
+        # No lo hacemos de solo lectura en la entrada porque el frontend lo enviará.
+        # Para el serializer de salida sí será de solo lectura.
 
         with transaction.atomic():
-            # Create the Venta instance
             venta = Venta.objects.create(**validated_data)
-
-            # Create associated DetalleVenta instances
             for detalle_data in detalles_data:
-                # 'detalle_data['producto']' is already a Product object instance
-                # because it was validated and converted by DetalleVentaSerializer's validate method.
                 DetalleVenta.objects.create(venta=venta, **detalle_data)
 
-            # Calculate and update the total amount of the sale
             venta.monto_total = venta.calculate_total_amount()
-            venta.save(update_fields=['monto_total'])  # Save only the updated field
+            venta.save(update_fields=['monto_total'])
 
         return venta
 
     def update(self, instance, validated_data):
-        # Pop 'detalles' data for separate handling
         detalles_data = validated_data.pop('detalles', [])
 
-        # Update direct fields of Venta instance
+        # Actualizar campos directos de Venta
         instance.fecha = validated_data.get('fecha', instance.fecha)
         instance.estado = validated_data.get('estado', instance.estado)
+        instance.origen = validated_data.get('origen', instance.origen)  # <-- Permitir actualización de origen
 
-        # Update 'usuario' and 'empresa' if they are present in validated_data.
-        # They will already be object instances thanks to PrimaryKeyRelatedField.
         if 'usuario' in validated_data:
-            instance.usuario = validated_data['usuario']
-        if 'empresa' in validated_data:
-            instance.empresa = validated_data['empresa']
+            usuario_data = validated_data.pop('usuario')
+            if isinstance(usuario_data, int):
+                try:
+                    instance.usuario = CustomUser.objects.get(id=usuario_data)
+                except CustomUser.DoesNotExist:
+                    raise serializers.ValidationError({"usuario": f"El usuario con ID {usuario_data} no existe."})
+            elif isinstance(usuario_data, CustomUser):
+                instance.usuario = usuario_data
+            else:
+                raise serializers.ValidationError({"usuario": "Formato de usuario inválido."})
 
-        instance.save()  # Save the updated direct fields of the Venta
+        if 'empresa' in validated_data:
+            empresa_data = validated_data.pop('empresa')
+            if isinstance(empresa_data, int):
+                try:
+                    instance.empresa = Empresa.objects.get(id=empresa_data)
+                except Empresa.DoesNotExist:
+                    raise serializers.ValidationError({"empresa": f"La empresa con ID {empresa_data} no existe."})
+            elif isinstance(empresa_data, Empresa):
+                instance.empresa = empresa_data
+            else:
+                raise serializers.ValidationError({"empresa": "Formato de empresa inválido."})
+
+        instance.save()
 
         with transaction.atomic():
-            # Create a map of existing detail IDs for efficient lookup and removal tracking
             existing_detail_map = {detalle.id: detalle for detalle in instance.detalles.all()}
 
-            # Process each detail received from the frontend
             for detalle_data in detalles_data:
                 detalle_id = detalle_data.get('id')
 
-                # 'producto' in 'detalle_data' should already be a Product object instance
-                # due to validation in DetalleVentaSerializer.
                 producto_obj = detalle_data.get('producto')
                 if not isinstance(producto_obj, Producto):
                     raise serializers.ValidationError({
-                        "detalles": f"Internal Error: Product in detail is not a valid Product object after validation. Detail ID: {detalle_id}"
+                        "detalles": f"Error interno: El producto en el detalle no es un objeto Producto válido después de la validación. Detalle ID: {detalle_id}"
                     })
 
-                if detalle_id:  # If detail has an ID, it's an existing detail to be updated
+                if detalle_id:
                     if detalle_id in existing_detail_map:
-                        detalle_instance = existing_detail_map.pop(detalle_id)  # Remove from map as it's processed
-                        # Update existing detail fields
-                        detalle_instance.producto = producto_obj  # Direct assignment as it's already an object
+                        detalle_instance = existing_detail_map.pop(detalle_id)
+                        detalle_instance.producto = producto_obj
                         detalle_instance.cantidad = detalle_data.get('cantidad', detalle_instance.cantidad)
                         detalle_instance.precio_unitario = detalle_data.get('precio_unitario',
                                                                             detalle_instance.precio_unitario)
@@ -168,19 +178,15 @@ class VentaSerializer(serializers.ModelSerializer):
                                                                                detalle_instance.descuento_aplicado)
                         detalle_instance.save()
                     else:
-                        # If an ID is provided but doesn't belong to this sale, it's an error
                         raise serializers.ValidationError(
                             {"detalles": f"Detalle con ID {detalle_id} no encontrado o no pertenece a esta venta."})
-                else:  # If detail has no ID, it's either a new detail or an existing one sent without ID
-
-                    # Try to find an existing detail for this product in this sale
+                else:
                     existing_by_product = instance.detalles.filter(producto=producto_obj).first()
 
                     if existing_by_product:
-                        # If a detail with this product already exists for this sale, update it
                         detalle_instance = existing_by_product
-                        existing_detail_map.pop(detalle_instance.id, None)  # Remove from map if it was there
-                        detalle_instance.producto = producto_obj  # Direct assignment
+                        existing_detail_map.pop(detalle_instance.id, None)
+                        detalle_instance.producto = producto_obj
                         detalle_instance.cantidad = detalle_data.get('cantidad', detalle_instance.cantidad)
                         detalle_instance.precio_unitario = detalle_data.get('precio_unitario',
                                                                             detalle_instance.precio_unitario)
@@ -188,14 +194,11 @@ class VentaSerializer(serializers.ModelSerializer):
                                                                                detalle_instance.descuento_aplicado)
                         detalle_instance.save()
                     else:
-                        # If no existing detail for this product, create a new one
                         DetalleVenta.objects.create(venta=instance, **detalle_data)
 
-            # Any remaining details in existing_detail_map were not sent in the update request, so delete them
             for detalle_obj in existing_detail_map.values():
                 detalle_obj.delete()
 
-            # Recalculate and save the total amount of the sale after all detail modifications
             instance.monto_total = instance.calculate_total_amount()
             instance.save(update_fields=['monto_total'])
 

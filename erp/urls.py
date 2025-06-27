@@ -1,4 +1,4 @@
-# tu_proyecto/urls.py (o erp/urls.py según tu estructura)
+# erp/urls.py
 
 from django.contrib import admin
 from django.urls import path, include, re_path
@@ -7,12 +7,9 @@ from django.conf.urls.static import static
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from rest_framework import permissions
-
-# --- Importar el DefaultRouter UNA SOLA VEZ ---
 from rest_framework.routers import DefaultRouter
 
-# --- Importar TODOS tus ViewSets ---
-# Asegúrate de que las rutas de importación sean correctas para cada app
+from apps.movimientos.views import MovimientoViewSet
 from apps.rbac.views import PermissionViewSet, RoleViewSet
 from apps.usuarios.views import UserViewSet
 from apps.sucursales.views import SucursalViewSet
@@ -24,12 +21,10 @@ from apps.ventas.views import VentaViewSet, DetalleVentaViewSet
 from apps.proveedores.views import ProveedorViewSet
 from apps.suscripciones.views import SuscripcionViewSet
 from apps.productos.views import ProductoViewSet
-from apps.movimientos.views import MovimientoViewSet
+from apps.pagos.views import PagoViewSet # ¡NUEVO! Importar PagoViewSet
 
-# --- Inicializar el ÚNICO router ---
 router = DefaultRouter()
 
-# --- Registrar TODOS tus ViewSets aquí ---
 router.register(r'permissions', PermissionViewSet, basename='permission')
 router.register(r'roles', RoleViewSet, basename='role')
 router.register(r'users', UserViewSet, basename='user')
@@ -44,6 +39,7 @@ router.register(r'proveedores', ProveedorViewSet, basename='proveedor')
 router.register(r'suscripciones', SuscripcionViewSet, basename='suscripcion')
 router.register(r'productos', ProductoViewSet, basename='producto')
 router.register(r'movimientos', MovimientoViewSet, basename='movimiento')
+router.register(r'pagos', PagoViewSet) # ¡NUEVO! Registrar PagoViewSet
 
 schema_view = get_schema_view(
     openapi.Info(
@@ -61,19 +57,25 @@ schema_view = get_schema_view(
 urlpatterns = [
     path('admin/', admin.site.urls),
 
-    # --- Incluir TODAS las URLs generadas por el router bajo el prefijo 'api/' ---
-    path('api/', include(router.urls)),  # Maneja todas las rutas de tus ViewSets (incluyendo /api/users/)
+    # Agrupamos todas las URLs de la API bajo un solo 'api/'
+    path('api/', include([
+        # Rutas generadas por el router (API administrativa)
+        path('', include(router.urls)), # Esto incluirá ahora /api/pagos/
 
-    # --- Las URLs de 'apps.usuarios' que son manuales (login, registro, perfil) ---
-    path('api/usuarios/', include('apps.usuarios.urls')),
-    # <-- Esta sigue incluyendo las rutas manuales de la app usuarios.
+        # Rutas específicas de usuarios (si no están en el router)
+        path('usuarios/', include('apps.usuarios.urls')),
 
-    path('api/dashboard/', include('apps.dashboard.urls')),
+        # Rutas de dashboard y reportes
+        path('dashboard/', include('apps.dashboard.urls')),
+        path('reports/', include('reports.urls')), # Asumiendo que reports está en apps.reports.urls
 
-    # --- ¡AÑADE ESTA LÍNEA PARA INCLUIR LAS URLS DE REPORTES! ---
-    path('api/reports/', include('reports.urls')),
-    # Asumiendo que 'reports' está directamente bajo la carpeta del proyecto.
+        # --- RUTAS PÚBLICAS DEL MARKETPLACE ---
+        path('', include('apps.empresas.urls')),
+        path('public-products/', include('apps.productos.urls')),
 
+    ])),
+
+    # Rutas para Swagger/Redoc (pueden ir fuera del 'api/' si lo prefieres, o dentro)
     re_path(r'^swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     re_path(r'^swagger/$', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     re_path(r'^redoc/$', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),

@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'apps.rbac.apps.RbacConfig',
     'apps.movimientos',
     'reports',
+    'apps.pagos',
 
 
 ]

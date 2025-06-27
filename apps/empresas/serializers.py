@@ -31,3 +31,12 @@ class EmpresaSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         return super().update(instance, validated_data)
+
+class EmpresaMarketplaceSerializer(serializers.ModelSerializer):
+    """
+    Serializer más ligero para mostrar empresas en el marketplace público.
+    No expone detalles sensibles ni relaciones complejas.
+    """
+    class Meta:
+        model = Empresa
+        fields = ['id', 'nombre', 'descripcion_corta', 'direccion', 'is_active']

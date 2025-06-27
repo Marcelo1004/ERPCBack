@@ -9,6 +9,7 @@ class Producto(models.Model):
     precio = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio Unitario")
     stock = models.PositiveIntegerField(default=0, verbose_name="Stock Disponible")
     imagen = models.ImageField(upload_to='productos/', blank=True, null=True, verbose_name="Imagen del Producto")
+    is_active = models.BooleanField(default=True)
     descuento = models.DecimalField(
         max_digits=5,
         decimal_places=4,  # <--- ¡CAMBIA ESTO DE 2 A 4!
